@@ -1,0 +1,104 @@
+#!/bin/bash
+
+# Commande principale pour gérer les skills
+
+function install() {
+  SKILL=$1
+  VERSION=${2:-main}
+
+  # Récupère le skill depuis GitHub
+  SKILL_URL="https://raw.githubusercontent.com/tblion/opencode_skills/$VERSION/skills/$SKILL/SKILL.md"
+
+  # Crée le répertoire du skill
+  mkdir -p "skills/$SKILL"
+
+  # Télécharge SKILL.md
+  if ! curl -s "$SKILL_URL" -o "skills/$SKILL/SKILL.md"; then
+    echo "Erreur: impossible de télécharger le skill '$SKILL'"
+    exit 1
+  fi
+
+  LOCAL_VERSION=$(grep -m1 'version:' "skills/$SKILL/SKILL.md" | cut -d' ' -f2)
+  echo "Skill '$SKILL' installé (version: $LOCAL_VERSION)"
+
+  # Télécharge les migrations si elles existent
+  MIGRATIONS_URL="https://api.github.com/repos/tblion/opencode_skills/contents/skills/$SKILL/migrations?ref=$VERSION"
+  MIGRATIONS=$(curl -s "$MIGRATIONS_URL" 2>/dev/null)
+
+  if [ -n "$MIGRATIONS" ]; then
+    echo "$MIGRATIONS" | jq -r '.[].download_url' 2>/dev/null | while read -r url; do
+      filename=$(basename "$url")
+      curl -s "$url" -o "skills/$SKILL/migrations/$filename" 2>/dev/null
+      chmod +x "skills/$SKILL/migrations/$filename" 2>/dev/null
+    done
+  fi
+}
+
+function update() {
+  SKILL=$1
+
+  LOCAL_VERSION=$(grep -m1 'version:' "skills/$SKILL/SKILL.md" | cut -d' ' -f2)
+  REMOTE_VERSION=$(curl -s "https://raw.githubusercontent.com/tblion/opencode_skills/main/skills/$SKILL/SKILL.md" 2>/dev/null | grep -m1 'version:' | cut -d' ' -f2)
+
+  if [ -z "$REMOTE_VERSION" ]; then
+    echo "Erreur: impossible de récupérer la version distante pour '$SKILL'"
+    exit 1
+  fi
+
+  if [ "$LOCAL_VERSION" = "$REMOTE_VERSION" ]; then
+    echo "$SKILL est déjà à jour (version $LOCAL_VERSION)"
+    exit 0
+  fi
+
+  echo "Mise à jour disponible: $LOCAL_VERSION → $REMOTE_VERSION"
+
+  # Trouve le chemin de migration
+  MIGRATION_SCRIPT="skills/$SKILL/migrations/v${LOCAL_VERSION}_to_v${REMOTE_VERSION}.sh"
+
+  if [ -f "$MIGRATION_SCRIPT" ]; then
+    read -p "Appliquer la migration ? [y/N] " choice
+    if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
+      (cd "skills/$SKILL" && bash "$MIGRATION_SCRIPT")
+      echo "Migration terminée: $SKILL est maintenant en version $REMOTE_VERSION"
+    else
+      echo "Mise à jour annulée"
+    fi
+  else
+    echo "Aucun script de migration trouvé pour $LOCAL_VERSION → $REMOTE_VERSION"
+    read -p "Voulez-vous forcer la mise à jour sans migration ? [y/N] " choice
+    if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
+      curl -s "https://raw.githubusercontent.com/tblion/opencode_skills/main/skills/$SKILL/SKILL.md" -o "skills/$SKILL/SKILL.md"
+      echo "$SKILL mis à jour (version $REMOTE_VERSION) - Attention: pas de script de migration"
+    fi
+  fi
+}
+
+function check_updates() {
+  for SKILL in $(ls skills); do
+    if [ -f "skills/$SKILL/SKILL.md" ]; then
+      LOCAL_VERSION=$(grep -m1 'version:' "skills/$SKILL/SKILL.md" | cut -d' ' -f2)
+      REMOTE_VERSION=$(curl -s "https://raw.githubusercontent.com/tblion/opencode_skills/main/skills/$SKILL/SKILL.md" 2>/dev/null | grep -m1 'version:' | cut -d' ' -f2)
+
+      if [ -n "$REMOTE_VERSION" ] && [ "$LOCAL_VERSION" != "$REMOTE_VERSION" ]; then
+        echo "- $SKILL: $LOCAL_VERSION → $REMOTE_VERSION"
+      fi
+    fi
+  done
+}
+
+# Gestion des arguments
+case "$1" in
+  install)
+    install "$2"
+    ;;
+  update)
+    update "$2"
+    ;;
+  check-updates)
+    check_updates
+    ;;
+  *)
+    echo "Usage: $0 {install|update|check-updates} [skill]"
+    exit 1
+    ;;
+esac
